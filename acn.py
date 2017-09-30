@@ -1,3 +1,5 @@
+#coding:utf-8
+
 import tensorflow as tf
 import numpy as np
 
@@ -25,15 +27,16 @@ def conv(x, filter_height, filter_width, num_filters, stride_y, stride_x, name,
         # In the cases of multiple groups, split inputs & weights and
         else:
             # Split input and weights and convolve them separately
-            input_groups = tf.split(axis=3, num_or_size_splits=groups, value=x)
-            weight_groups = tf.split(axis=3, num_or_size_splits=groups, value=weights)
+            input_groups = tf.split(3, groups, x)
+            weight_groups = tf.split(3, groups, weights)
             output_groups = [convolve(i, k) for i, k in zip(input_groups, weight_groups)]
 
             # Concat the convolved output together again
-            conv = tf.concat(axis=3, values=output_groups)
+            conv = tf.concat(3, output_groups)
 
         # Add biases
-        bias = tf.reshape(tf.nn.bias_add(conv, biases), conv.get_shape().as_list())
+        # bias = tf.reshape(tf.nn.bias_add(conv, biases), conv.get_shape().as_list())
+        bias = tf.nn.bias_add(conv, biases)
 
         # Apply relu function
         relu = tf.nn.relu(bias, name=scope.name)
@@ -132,26 +135,47 @@ class ACN(object):
         s_h = 1
         s_w = 1
         convs = conv(conv5, k_h, k_w, c_o, s_h, s_w, padding="VALID", name="convs")
+        # print(convs.get_shape())
         # s -> a
         conva = tf.nn.softmax(convs)
         # parameter ck, totally we have k cks.The dimension of ck is KxD.
         c = tf.Variable(tf.random_normal([256, 64]))  # 2-D python array
-        # VLAD core, get vector V whose dimension is K x D.
-        # Let's try to use a loop to assign V firstly.
-        conva_reshape = tf.reshape(conva, shape=[13 * 13, 256])  # reshape a from WxHxK to NxK
-        conva_transpose = tf.transpose(conva_reshape)  # transpose a from NxK to KxN
-        c_expand = tf.tile(tf.expand_dims(tf.tile(tf.expand_dims(c, 0), [13, 1, 1]), 0), [13, 1, 1, 1])  # expand c from DxK to WxHxDxK
-        c_reshape = tf.reshape(c_expand, [169, 256, 64])  # reshape c from WxHxDxK to NxDxK
-        conv5_expand = tf.tile(tf.expand_dims(conv5, -1), [1, 1, 1, 64])  # expand conv5 from WxHxD to WxHxDxK
+
+        # VLAD core, get vector V whose dimension is K x D. Let's try to use a loop to assign V firstly.
+        # a: reshape a from BxWxHxK to BxNxK
+        conva_reshape = tf.reshape(conva, shape=[-1, 13 * 13, 64])
+        # a: transpose a from NxK to KxNxB
+        conva_transpose = tf.transpose(conva_reshape)
+        # c: expand c from DxK to WxHxDxK
+        c_expand = tf.tile(tf.expand_dims(tf.tile(tf.expand_dims(c, 0), [13, 1, 1]), 0), [13, 1, 1, 1])
+        # c_batch = tf.tile(tf.expand_dims(c_expand, 0), [])
+        # c:reshape c from WxHxDxK to NxDxK
+        c_reshape = tf.reshape(c_expand, [169, 256, 64])
+        # conv5: expand conv5 from WxHxD to WxHxDxK
+        conv5_expand = tf.tile(tf.expand_dims(conv5, -1), [1, 1, 1, 1, 64])
         # conv5_reshape = tf.reshape(conv5, [13*13, 256])  #reshape conv5 from WxHxD to NxD
-        conv5_reshape = tf.reshape(conv5_expand, [169, 256, 64])  # reshape conv5 from WxHxDxK to NxDxK
+        # conv5: reshape conv5 from WxHxDxK to NxDxK
+        conv5_reshape = tf.reshape(conv5_expand, [169, 256, 64])
+        # residuals: dimension of residuals is NxDxK
         residuals = tf.subtract(conv5_reshape, c_reshape)
-        for i in range(64):
-            if i == 0:
-                # V is calculated by 1xN matmul NxD, and dimension of V is 1xD
-                V = tf.matmul(conva_transpose[i, :], tf.reshape(residuals[13*13, 256, i], [13*13, 256]))
+        # get V whose dimension is KxD
+        for j in range(24):
+            V = tf.Variable([])
+            for i in range(64):
+                if i == 0:
+                    # V is calculated by 1xN multiply NxD, and dimension of V is 1xD
+                    V = tf.matmul(
+                        tf.reshape(
+                            conva_transpose[i, :, j], [1, -1]), tf.reshape(residuals[:, :, i], [13 * 13, 256]))
+                else:
+                    V = tf.concat(0, [V, tf.matmul(
+                        tf.reshape(
+                            conva_transpose[i, :, j], [1, -1]), tf.reshape(residuals[:, :, i], [13 * 13, 256]))])
+            if j == 0:
+                Va = V
             else:
-                V = tf.concat(V, tf.matmul(conva_transpose[i, :], tf.reshape(residuals[13*13, 256, i], [13*13, 256])))
+                Va = tf.concat(0, [Va, V])
+
         # KxVxK = tf.matmul(conva_transpose, tf.subtract(conv5_reshape, c_expand))  # KxDxK
         # V = tf.Variable([], dtype='float32')
         # for i in range(64):
@@ -164,12 +188,15 @@ class ACN(object):
         #             for h in range(13):
         #                 V[k][j] = tf.assign(V[k][j],
         #                                     tf.add(tf.add(V[k][j], tf.multiply(conva[w][h][k], conv5[w][h][j])), cc))
-        V = tf.reshape(V, [-1, 64 * 256])
+
+        # V: reshape V from KxD to 1x(KxD)
+        V = tf.reshape(V, [1, -1])
+
         # intra-normalization
-        V = tf.nn.l2_normalize(V, dim=2)
+        V = tf.nn.l2_normalize(V, dim=1)
 
         # L2 normalization, output is a K x D discriptor
-        self.output = tf.nn.l2_normalize(V, dim=1)
+        self.output = tf.nn.l2_normalize(V, dim=0)
 
     def load_initial_weights(self, session):
 

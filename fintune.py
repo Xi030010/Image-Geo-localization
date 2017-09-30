@@ -1,3 +1,5 @@
+#coding:utf-8
+
 import tensorflow as tf
 import numpy as np
 from acn import ACN
@@ -21,18 +23,18 @@ train_layers = ['convs', 'c', 'V']
 display_step = 1
 
 # Path for tf.summary.FileWriter and to store model checkpoints
-filewriter_path = "tmp/finetune_alexnet/dogs_vs_cats"
-checkpoint_path = "tmp/finetune_alexnet/"
+filewriter_path = "C:/Users/董鹏熙/Desktop/Image-Geo-localization-master/finetune_alexnet/dogs_vs_cats"
+checkpoint_path = "C:/Users/董鹏熙/Desktop/Image-Geo-localization-master/finetune_alexnet/"
 # Create parent path if it doesn't exist
 if not os.path.isdir(checkpoint_path): os.mkdir(checkpoint_path)
 
 # input, we assume that input x is ordered by [Original, Original_aux1, Original_aux2]
-x = tf.placeholder(tf.float32, [batch_size, 227, 227, 3])
+x = tf.placeholder(tf.float32, [None, 227, 227, 3])
 y = tf.placeholder(tf.string, [None])
 # Initialize model
 model = ACN(x, train_layers)
-# link vector to model output
-vector = model.output
+# link output to model output, dimension is Bx(KxD)
+output = model.output
 
 # # store the output images vector from all training batches
 # refervectors = np.array([])
@@ -41,16 +43,17 @@ vector = model.output
 # Op for calculating the loss
 with tf.name_scope("loss"):
 
-    # loss function, need to put the instance in the formula
-    loss = tf.Variable(tf.zeros([24]))
     for i in range(24):
-        oriimg = vector[(i - 1) * 3]
-        oriimg_aux1 = vector[(i - 1) * 3 + 1]
-        oriimg_aux2 = vector[(i - 1) * 3 + 2]
+        oriimg = output[i * 3]
+        oriimg_aux1 = output[i * 3 + 1]
+        oriimg_aux2 = output[i * 3 + 2]
         ed_ori2aux1 = tf.sqrt(tf.reduce_sum(tf.square(oriimg - oriimg_aux1)))
         ed_ori2aux2 = tf.sqrt(tf.reduce_sum(tf.square(oriimg - oriimg_aux2)))
-        sum = ed_ori2aux1 - ed_ori2aux2 + 0.25
-        loss[i] = tf.assign(loss[i], tf.maximum(sum, 0))
+        s = tf.Variable([ed_ori2aux1 - ed_ori2aux2 + 0.25])
+        if i == 0:
+            loss = tf.maximum(s, 0)
+        else:
+            loss = tf.concat(0, [loss, tf.maximum(s, 0)])
 
 # List of trainable variables of the layers we want to train
 var_list = [v for v in tf.trainable_variables() if v.name.split('/')[0] in train_layers]
@@ -77,21 +80,21 @@ for var in var_list:
 tf.summary.scalar('cross_entropy', loss)
 
 # Evaluation op: Accuracy of the model
-with tf.name_scope("accuracy"):
-    # get the best retrieved image from database
-    retrivector = np.array([])
-    for qvector in vector:
-        eds = np.array([])
-        for rvector in refervectors:
-            eds = np.append(eds, tf.sqrt(tf.reduce_sum(tf.square(qvector - rvector))))
-        minindex = np.argmax(eds)
-        retrivector = np.append(retrivector, refervectors(minindex))# 考虑数据类型；应该不只存query图片的vector，都要存
-
-    correct_img = tf.equal(retrivector, y)
-    accuracy = tf.reduce_mean(tf.cast(correct_img, tf.float32))
+# with tf.name_scope("accuracy"):
+#     # get the best retrieved image from database
+#     retrivector = np.array([])
+#     for qvector in vector:
+#         eds = np.array([])
+#         for rvector in refervectors:
+#             eds = np.append(eds, tf.sqrt(tf.reduce_sum(tf.square(qvector - rvector))))
+#         minindex = np.argmax(eds)
+#         retrivector = np.append(retrivector, refervectors(minindex))# 考虑数据类型；应该不只存query图片的vector，都要存
+#
+#     correct_img = tf.equal(retrivector, y)
+#     accuracy = tf.reduce_mean(tf.cast(correct_img, tf.float32))
 
 # Add the accuracy to the summary
-tf.summary.scalar('accuracy', accuracy)
+# tf.summary.scalar('accuracy', accuracy)
 
 # Merge all summaries together
 merged_summary = tf.summary.merge_all()
@@ -132,4 +135,4 @@ with tf.Session() as sess:
         with tf.Session() as sess:
             init = tf.global_variables_initializer()
             sess.run(init)
-            sess.run(train_op, feed_dict={x: x_batch})
+            sess.run(train_op, feed_dict={x: np.array()})
