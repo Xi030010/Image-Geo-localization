@@ -119,14 +119,14 @@ c_expand = tf.tile(tf.expand_dims(tf.tile(tf.expand_dims(c, 0), [13, 1, 1]), 0),
 # c_batch = tf.tile(tf.expand_dims(c_expand, 0), [])
 # c:reshape c from WxHxDxK to NxDxK
 c_reshape = tf.reshape(c_expand, [169, 256, 64])
-# conv5: expand conv5 from WxHxD to WxHxDxK
+# conv5: expand conv5 from BxWxHxD to BxWxHxDxK
 conv5_expand = tf.tile(tf.expand_dims(conv5, -1), [1, 1, 1, 1, 64])
 # conv5_reshape = tf.reshape(conv5, [13*13, 256])  #reshape conv5 from WxHxD to NxD
-# conv5: reshape conv5 from WxHxDxK to NxDxK
-conv5_reshape = tf.reshape(conv5_expand, [169, 256, 64])
-# residuals: dimension of residuals is NxDxK
+# conv5: reshape conv5 from BxWxHxDxK to BxNxDxK
+conv5_reshape = tf.reshape(conv5_expand, [-1, 169, 256, 64])
+# residuals: dimension of residuals is BxNxDxK
 residuals = tf.subtract(conv5_reshape, c_reshape)
-# get V whose dimension is KxD
+# get V whose dimension is BxKxD
 for j in range(24):
     V = tf.Variable([])
     for i in range(64):
@@ -134,11 +134,11 @@ for j in range(24):
             # V is calculated by 1xN multiply NxD, and dimension of V is 1xD
             V = tf.matmul(
                     tf.reshape(
-                        conva_transpose[i, :, j], [1, -1]), tf.reshape(residuals[:, :, i], [13*13, 256]))
+                        conva_transpose[i, :, j], [1, -1]), tf.reshape(residuals[j, :, :, i], [13*13, 256]))
         else:
             V = tf.concat(0, [V, tf.matmul(
                     tf.reshape(
-                        conva_transpose[i, :, j], [1, -1]), tf.reshape(residuals[:, :, i], [13*13, 256]))])
+                        conva_transpose[i, :, j], [1, -1]), tf.reshape(residuals[j, :, :, i], [13*13, 256]))])
     if j == 0:
         Va = V
     else:
@@ -158,16 +158,16 @@ for j in range(24):
 #                                     tf.add(tf.add(V[k][j], tf.multiply(conva[w][h][k], conv5[w][h][j])), cc))
 
 # V: reshape V from KxD to 1x(KxD)
-V = tf.reshape(V, [1, -1])
+Va = tf.reshape(V, [1, -1])
 
 # intra-normalization
-V = tf.nn.l2_normalize(V, dim=1)
+Va = tf.nn.l2_normalize(V, dim=2)
 
 # L2 normalization, output is a K x D discriptor
-output = tf.nn.l2_normalize(V, dim=0)
+output = tf.nn.l2_normalize(V, dim=1)
 
 with tf.Session() as sess:
     init = tf.global_variables_initializer()
     sess.run(init)
-    t = sess.run(output, feed_dict={X: np.array()})
+    t = sess.run(output, feed_dict={X: np.ones((24, 227, 227, 3), dtype='float32')})
     print(t)
