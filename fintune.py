@@ -5,6 +5,7 @@ import numpy as np
 from acn import ACN
 import os
 from datetime import datetime
+from PIL import Image
 
 # Path to the textfiles for the trainings and validation set
 train_file = 'train.txt'
@@ -22,9 +23,13 @@ train_layers = ['convs', 'c', 'V']
 # How often we want to write the tf.summary data to disk
 display_step = 1
 
-# Path for tf.summary.FileWriter and to store model checkpoints
-filewriter_path = "C:/Users/董鹏熙/Desktop/Image-Geo-localization-master/finetune_alexnet/dogs_vs_cats"
-checkpoint_path = "C:/Users/董鹏熙/Desktop/Image-Geo-localization-master/finetune_alexnet/"
+# Path for tf.summary.FileWriter and to store model checkpoints in different os
+if os.name == 'nt':
+    filewriter_path = "C:/Users/董鹏熙/Desktop/Image-Geo-localization-master/finetune_alexnet/dogs_vs_cats"
+    checkpoint_path = "C:/Users/董鹏熙/Desktop/Image-Geo-localization-master/finetune_alexnet/"
+elif os.name == 'posix':
+    filewriter_path = "/Users/dongpengxi/Desktop/Image Geo-localization/finetune_alexnet/filewriter"
+    checkpoint_path = "/Users/dongpengxi/Desktop/Image Geo-localization/finetune_alexnet"
 # Create parent path if it doesn't exist
 if not os.path.isdir(checkpoint_path): os.mkdir(checkpoint_path)
 
@@ -36,24 +41,21 @@ model = ACN(x, train_layers)
 # link output to model output, dimension is Bx(KxD)
 output = model.output
 
-# # store the output images vector from all training batches
-# refervectors = np.array([])
-# refervectors = np.append(refervectors, tf.Session().run(vector))
-
 # Op for calculating the loss
 with tf.name_scope("loss"):
 
+    # get loss, dimension is batch_size
     for i in range(24):
         oriimg = output[i * 3]
         oriimg_aux1 = output[i * 3 + 1]
         oriimg_aux2 = output[i * 3 + 2]
         ed_ori2aux1 = tf.sqrt(tf.reduce_sum(tf.square(oriimg - oriimg_aux1)))
         ed_ori2aux2 = tf.sqrt(tf.reduce_sum(tf.square(oriimg - oriimg_aux2)))
-        s = tf.Variable([ed_ori2aux1 - ed_ori2aux2 + 0.25])
+        s = [ed_ori2aux1 - ed_ori2aux2 + 0.25]
         if i == 0:
             loss = tf.maximum(s, 0)
         else:
-            loss = tf.concat(0, [loss, tf.maximum(s, 0)])
+            loss = tf.concat([loss, tf.maximum(s, 0)], 0)
 
 # List of trainable variables of the layers we want to train
 var_list = [v for v in tf.trainable_variables() if v.name.split('/')[0] in train_layers]
@@ -102,11 +104,37 @@ merged_summary = tf.summary.merge_all()
 # Initialize the FileWriter
 writer = tf.summary.FileWriter(filewriter_path)
 
-# Initialize an saver for store model checkpoints
-saver = tf.train.Saver()
-
 # Get the batch data from dataset
-pass
+traindata = np.loadtxt('traindata.txt')
+train_steps_per_epoch = traindata.shape[0] / batch_size
+def get_one_batch(step):
+    # based on batch_size, get (batch_size / 2 * 4) images resized by 227 x 227 x 3
+    for i in range(batch_size / 2 * 4):
+
+        img = Image.open(traindata[(step - 1)*12] + i)
+        img_resize = img.resize((227, 227, 3), Image.ANTIALIAS)
+        img2nda = np.array(img_resize)
+
+        if x == 0:
+            x = img2nda
+        else:
+            x = np.concatenate((x, img2nda))
+
+    # get one batch whose size is batch_size * 3
+    for i in range(batch_size / 2):
+
+        if i == 0:
+            x_one_batch = x[i * 4]
+        else:
+            x_one_batch = np.concatenate((x_one_batch, x[i * 4]))
+
+        x_one_batch = np.concatenate((x_one_batch, x[i * 4 + 1]))
+        x_one_batch = np.concatenate((x_one_batch, x[i * 4 + 2]))
+        x_one_batch = np.concatenate((x_one_batch, x[i * 4]))
+        x_one_batch = np.concatenate((x_one_batch, x[i * 4 + 1]))
+        x_one_batch = np.concatenate((x_one_batch, x[i * 4 + 3]))
+
+    return x_one_batch
 
 # Start tensorflow session
 with tf.Session() as sess:
@@ -129,10 +157,34 @@ with tf.Session() as sess:
 
         print("{} Epoch number: {}".format(datetime.now(), epoch + 1))
 
-        step = 1
+        step = 0
 
         # training
-        with tf.Session() as sess:
-            init = tf.global_variables_initializer()
-            sess.run(init)
-            sess.run(train_op, feed_dict={x: np.array()})
+        while step < train_steps_per_epoch:
+
+            trainbatch = get_one_batch(step + 1)
+
+            sess.run(loss, feed_dict={x: trainbatch})
+
+            if step % display_step == 0:
+                writer.add_summary(s, epoch * train_steps_per_epoch + step)
+
+            # store the output images vector from all training batches
+            if step == 0:
+                refervectors = tf.Session().run(output)
+            else:
+                refervectors = np.concatenate((refervectors, tf.Session().run(output)))
+
+            step += 1
+
+        # validate the model on the entire validation data every epoch
+
+        print("{} Saving checkpoint of model...".format(datetime.now()))
+
+        # save checkpoint of the model
+        checkpoint_name = os.path.join(checkpoint_path, 'model_epoch' + str(epoch + 1) + '.ckpt')
+        # Initialize an saver for store model checkpoints
+        saver = tf.train.Saver()
+        save_path = saver.save(sess, checkpoint_name)
+
+        print("{} Model checkpoint saved at {}".format(datetime.now(), checkpoint_name))
